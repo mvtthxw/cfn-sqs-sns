@@ -1,0 +1,120 @@
+#Stack configuration 
+
+# PARAMETERS
+Parameters:
+  Env: 
+    Description: Environment variable
+    Type: String
+    Default: "dev" 
+    AllowedValues: ["dev", "test", "prod"]
+
+# RESOURCES 
+Resources:
+# STAGE 1 - S3 BUCKET
+# Create S3 bucket 
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Suspended
+      BucketName: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - !Ref Env
+          - 'bucket'
+          - !Select 
+            - 0
+            - !Split 
+              - '-'
+              - !Select 
+                - 2
+                - !Split 
+                  - /
+                  - !Ref AWS::StackId
+# Role to create object in S3
+  S3PutObjectFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "S3Writer"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+      RoleName: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - !Ref Env
+          - 'put-object-role'
+          - !Select 
+            - 0
+            - !Split 
+              - '-'
+              - !Select 
+                - 2
+                - !Split 
+                  - /
+                  - !Ref AWS::StackId
+#Lambda to create folders in S3
+  CreateFoldersLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.8  # Python version
+      Handler: index.lambda_handler  # Python file: index.py, function: lambda_handler
+      Role: !GetAtt S3PutObjectFunctionRole.Arn  # ARN for Role
+      FunctionName: !Join  # Name of the function 
+        - '-'
+        - - !Ref AWS::StackName
+          - !Ref Env
+          - 'create-folder-lambda'
+          - !Select 
+            - 0
+            - !Split 
+              - '-'
+              - !Select 
+                - 2
+                - !Split 
+                  - /
+                  - !Ref AWS::StackId
+      Code: # Function code 
+        ZipFile:
+          !Sub |
+            import boto3
+            import os
+            import cfnresponse
+            def lambda_handler(event, context):
+                try:
+                    s3 = boto3.client('s3')
+                    bucket_name = event['ResourceProperties']['BucketName']
+                    s3.put_object(Bucket=bucket_name, Key=('raw/'))
+                    s3.put_object(Bucket=bucket_name, Key=('processed/'))
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, "CustomResourceSuccess")
+                except Exception as e:
+                    cfnresponse.send(event, context, cfnresponse.FAILED, {}, str(e))
+#Permission to invoke Lambda
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CreateFoldersLambdaFunction.Arn
+      Principal: cloudformation.amazonaws.com
+#Invoke Lambda
+  InvokeLambdaFunction:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt CreateFoldersLambdaFunction.Arn #Reference to lambda
+      BucketName: !Ref S3Bucket  # Reference to Bucket 
